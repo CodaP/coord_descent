@@ -28,13 +28,6 @@ size_t satidx(size_t i, size_t j){
     assert (i < SAT_ROWS);
     assert (j < SAT_COLS);
     return (i*SAT_COLS + j)*4;
-    //div_t di = div(i,16);
-    //div_t dj = div(j,16);
-    //size_t chunki = di.quot;
-    //size_t chunkj = dj.quot;
-    //fprintf(stderr, "%d %d %d %d\n", chunki, chunkj, di.rem, dj.rem);
-    //339, 339, 16, 16, 4
-    //return (chunki*339*16*16 + + chunkj*16*16+di.rem*16+dj.rem)*4;
 }
 
 
@@ -50,18 +43,6 @@ float d(float * a, float * b){
         float buf[4];
         _mm_store_ps(buf, diff2);
         return buf[0]+buf[1]+buf[2];
-    }
-}
-
-
-float dslow(float * a, float * b){
-    if isnan(a[0]){
-        return INFINITY;
-    } else{
-        float dx = a[0]-b[0];
-        float dy = a[1]-b[1];
-        float dz = a[2]-b[2];
-        return dx*dx + dy*dy + dz*dz;
     }
 }
 
@@ -152,94 +133,6 @@ void idxmin_grid(float * grid_coords, float x, float y, float z, size_t start_i,
 }
 
 
-void idxmin_sat(float * sat_coords, float x, float y, float z, size_t start_i, size_t start_j, size_t *final_i, size_t *final_j, diag_t * diag){
-    size_t i = start_i;
-    size_t j = start_j;
-    uint32_t num_steps_i = 0;
-    uint32_t num_steps_j = 0;
-    union {
-        float xyz[4];
-        __m128 v;
-    } xyz;
-    xyz.xyz[0] = x;
-    xyz.xyz[1] = y;
-    xyz.xyz[2] = z;
-    xyz.xyz[3] = 0;
-    while(true){
-        bool first = true;
-        // first scan fast axis
-        while(true){
-            float dleft, dright;
-            float dnow = d(&sat_coords[satidx(i,j)], xyz.xyz);
-            //printf("%d %d %f\n", i, j, dnow);
-            if((j > 0) && (j < (SAT_COLS-1))){
-                dleft = d(&sat_coords[satidx(i,j-1)], xyz.xyz);
-                dright = d(&sat_coords[satidx(i,j+1)], xyz.xyz);
-            } else if (j == 0) {
-                dleft = INFINITY;
-                dright = d(&sat_coords[satidx(i,j+1)], xyz.xyz);
-            } else if (j == SAT_COLS-1){
-                dleft = d(&sat_coords[satidx(i,j-1)], xyz.xyz);
-                dright = INFINITY;
-            }
-            if((dleft < dnow) && (dleft < dright)){
-                first = false;
-                j = j-1;
-            } else if((dright < dnow) && (dright < dleft)){
-                first = false;
-                j = j+1;
-            } else {
-                // At minimum, don't move any more
-                break;
-            }
-            num_steps_j++;
-        }
-        while(true){
-            float dup, ddown;
-            float dnow = d(&sat_coords[satidx(i,j)], xyz.xyz);
-            //printf("%d %d %f\n", i, j, dnow);
-            if((i > 0) && (i < (SAT_ROWS-1))){
-                dup = d(&sat_coords[satidx(i-1,j)], xyz.xyz);
-                ddown = d(&sat_coords[satidx(i+1,j)], xyz.xyz);
-            } else if (j == 0) {
-                dup = INFINITY;
-                ddown = d(&sat_coords[satidx(i+1,j)], xyz.xyz);
-            } else if (j == SAT_ROWS-1){
-                dup = d(&sat_coords[satidx(i-1,j)], xyz.xyz);
-                ddown = INFINITY;
-            }
-            if((dup < dnow) && (dup < ddown)){
-                first = false;
-                i = i-1;
-            } else if((ddown < dnow) && (ddown < dup)){
-                first = false;
-                i = i+1;
-            } else {
-                // At minimum, don't move any more
-                break;
-            }
-            num_steps_i++;
-        }
-
-        if(first){
-            (*final_i) = i;
-            (*final_j) = j;
-            diag->num_steps_i = num_steps_i;
-            diag->num_steps_j = num_steps_j;
-            return;
-        }
-    }
-}
-
-
-void idxmin_fast(float * sat_coords, float x, float y, float z, size_t start_i, size_t start_j, size_t *final_i, size_t *final_j, diag_t * diag){
-    idxmin_grid(sat_coords, x, y, z, start_i, start_j, final_i, final_j, diag);
-}
-
-
-void idxmin_slow(float * sat_coords, float x, float y, float z, size_t start_i, size_t start_j, size_t *final_i, size_t *final_j, diag_t * diag){
-    idxmin_grid(sat_coords, x, y, z, 2500, 2500, final_i, final_j, diag);
-}
 int main(){
     const char * sat_coords_fname = "sat_coords.dat";
     const char * grid_coords_fname = "grid_coords.dat";
@@ -261,23 +154,15 @@ int main(){
     float * grid_coords = mmap(NULL, grid_file_length, PROT_READ, MAP_SHARED,
                   grid_fd, 0);
 
-    //printf("%f\n", sat_coords[satidx(2500,2500)]);
-    //return;
-    
-    //time_t time(time_t *t);
+    const float threshold_radius = 5e3;
     int num_found = 0;
     int total = 0;
-    size_t start_i = 2500;
-    size_t start_j = 2500;
+    size_t start_i = GRID_ROWS / 2;
+    size_t start_j = GRID_COLS / 2;
     uint32_t total_nsteps_i = 0;
     uint32_t total_nsteps_j = 0;
-    uint32_t fast_nsteps_i = 0;
-    uint32_t fast_nsteps_j = 0;
     float max_lat = -100;
     for (int lat=SAT_ROWS/2;lat<SAT_ROWS;lat++){
-    //for (int lat=500;lat<3000;lat++){
-        //for(int lon=700; lon<2000;lon++){
-        
         for(int pixel=0; pixel<SAT_COLS;pixel++){
             size_t final_i, final_j;
             float *xyz_tmp;
@@ -303,20 +188,14 @@ int main(){
             if(isnan(x)){
                 continue;
             }
-            //fprintf(stderr, "%f %f %f\n",x,y,z);
             diag_t diag;
-            if((start_i == GRID_ROWS/2) && (start_j==GRID_COLS/2)){
-                idxmin_slow(grid_coords, x, y, z, start_i, start_j, &final_i, &final_j, &diag);
-            } else {
-                idxmin_fast(grid_coords, x, y, z, start_i, start_j, &final_i, &final_j, &diag);
-            }
+            // Most time spent here
+            idxmin_grid(grid_coords, x, y, z, start_i, start_j, &final_i, &final_j, &diag);
             float d2final = d(&grid_coords[grididx(final_i,final_j)], xyz.xyz);
             float dfinal = sqrtf(d2final);
-            if(dfinal < 100e3){
+            if(dfinal < threshold_radius){
                 start_i = final_i;
                 start_j = final_j;
-                fast_nsteps_i += diag.num_steps_i;
-                fast_nsteps_j += diag.num_steps_j;
                 num_found++;
                 uint32_t dst = final_i*GRID_COLS + final_j;
                 uint32_t src = lat*SAT_COLS + lon;
@@ -325,15 +204,10 @@ int main(){
                 if((final_i*.05-90) > max_lat){
                     max_lat = final_i*.05 - 90;
                 }
-            } else {
-                //start_i = 2500;
-                //start_j = 2500;
             }
             total++;
             total_nsteps_i += diag.num_steps_i;
             total_nsteps_j += diag.num_steps_j;
-            //printf("%d %d %f\n", final_i, final_j, dfinal);
-            //break;
         }
         if( lat % 10 == 0 ){
             fprintf(stderr, "%d/%d found %d/%d; avg isteps: %f jsteps: %f max lat: %f\n", lat, SAT_ROWS, num_found, total, total_nsteps_i/(total+0.0), total_nsteps_j/(total+0.0), max_lat);
@@ -341,17 +215,8 @@ int main(){
             total = 0;
             total_nsteps_i = 0;
             total_nsteps_j = 0;
-            fast_nsteps_i = 0;
-            fast_nsteps_j = 0;
         }
-        //break;
     }
-    //fprintf(stderr, "%d %d\n", final_i, final_j);
-    //float *xyz = &sat_coords[satidx(final_i,final_j)];
-    //x = xyz[0];
-    //y = xyz[1];
-    //z = xyz[2];
-    //fprintf(stderr, "%f %f %f\n", x,y,z);
     fclose(src_idx);
     fclose(dst_idx);
     return 0;
