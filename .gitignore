@@ -1,0 +1,7 @@
+*.dat
+analysis.txt
+*.swp
+main
+main.o
+idx.txt
+gmon.out
