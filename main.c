@@ -157,7 +157,7 @@ void idxmin_fast(float * sat_coords, float x, float y, float z, size_t start_i, 
 void idxmin_slow(float * sat_coords, float x, float y, float z, size_t start_i, size_t start_j, size_t *final_i, size_t *final_j, diag_t * diag){
     idxmin(sat_coords, x, y, z, 2500, 2500, final_i, final_j, diag);
 }
-void main(){
+int main(){
     const char * sat_coords_fname = "sat_coords.dat";
     const char * grid_coords_fname = "grid_coords.dat";
     FILE *sat_file =  fopen(sat_coords_fname, "r");
@@ -252,4 +252,5 @@ void main(){
     //y = xyz[1];
     //z = xyz[2];
     //fprintf(stderr, "%f %f %f\n", x,y,z);
+    return 0;
 }
