@@ -5,7 +5,7 @@
 
 #define _POSIX_SOURCE
 
-#define DEBUG
+#define NDEBUG
 
 #include <stdio.h>
 #include <sys/mman.h>
@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <xmmintrin.h>
 #include <time.h>
+#include <pthread.h>
 
 
 size_t grididx(size_t i, size_t j){
@@ -133,27 +134,7 @@ void idxmin_grid(float * grid_coords, float x, float y, float z, size_t start_i,
 }
 
 
-int main(){
-    const char * sat_coords_fname = "sat_coords.dat";
-    const char * grid_coords_fname = "grid_coords.dat";
-    const char * dst_idx_fname = "dst_index.dat";
-    const char * src_idx_fname = "src_index.dat";
-    FILE *sat_file =  fopen(sat_coords_fname, "r");
-    FILE *grid_file =  fopen(grid_coords_fname, "r");
-    FILE *dst_idx =  fopen(dst_idx_fname, "w");
-    FILE *src_idx =  fopen(src_idx_fname, "w");
-
-    size_t sat_file_length = sizeof(float)*SAT_ROWS*SAT_COLS*4;
-    size_t grid_file_length = sizeof(float)*GRID_ROWS*GRID_COLS*4;
-
-    int sat_fd = fileno(sat_file);
-    int grid_fd = fileno(grid_file);
-
-    float * sat_coords = mmap(NULL, sat_file_length, PROT_READ, MAP_SHARED,
-                  sat_fd, 0);
-    float * grid_coords = mmap(NULL, grid_file_length, PROT_READ, MAP_SHARED,
-                  grid_fd, 0);
-
+void hemisphere(float * grid_coords, float * sat_coords, FILE* src_idx, FILE* dst_idx, bool north){
     const float threshold_radius = 5e3;
     int num_found = 0;
     int total = 0;
@@ -162,7 +143,23 @@ int main(){
     uint32_t total_nsteps_i = 0;
     uint32_t total_nsteps_j = 0;
     float max_lat = -100;
-    for (int lat=SAT_ROWS/2;lat<SAT_ROWS;lat++){
+
+    int scan_final, scan_start;
+    if (north){
+        scan_start = SAT_ROWS/2;
+        scan_final = SAT_ROWS;  // last lat will be rows-1
+    } else {
+        scan_start = SAT_ROWS/2-1;
+        scan_final = scan_start*2; // last lat will be 0
+    }
+
+    for (int scan=scan_start;scan<scan_final;scan++){
+        int lat;
+        if (north) {
+            lat = scan;
+        } else {
+            lat = scan_start - (scan-scan_start);
+        }
         for(int pixel=0; pixel<SAT_COLS;pixel++){
             size_t final_i, final_j;
             float *xyz_tmp;
@@ -170,7 +167,7 @@ int main(){
             if (lat % 2 == 0){
                 lon = pixel;
             } else {
-                lon = SAT_COLS - lon - 1;
+                lon = SAT_COLS - pixel - 1;
             }
             xyz_tmp = &sat_coords[satidx(lat,lon)];
             union {
@@ -217,6 +214,66 @@ int main(){
             total_nsteps_j = 0;
         }
     }
+}
+
+typedef struct {
+    float * grid_coords;
+    float * sat_coords;
+    FILE * src_idx;
+    FILE * dst_idx;
+    bool north;
+} worker_args_t;
+
+void * worker(void * worker_args){
+    worker_args_t * args = worker_args;
+    float * grid_coords = args->grid_coords;
+    float * sat_coords = args->sat_coords;
+    FILE * src_idx = args->src_idx;
+    FILE * dst_idx = args->dst_idx;
+    bool north = args->north;
+    hemisphere(grid_coords, sat_coords, src_idx, dst_idx, north);
+    return NULL;
+}
+
+int main(){
+    const char * sat_coords_fname = "sat_coords.dat";
+    const char * grid_coords_fname = "grid_coords.dat";
+    const char * dst_idx_fname = "dst_index.dat";
+    const char * src_idx_fname = "src_index.dat";
+    FILE *sat_file =  fopen(sat_coords_fname, "r");
+    FILE *grid_file =  fopen(grid_coords_fname, "r");
+    FILE *dst_idx =  fopen(dst_idx_fname, "w");
+    FILE *src_idx =  fopen(src_idx_fname, "w");
+
+    size_t sat_file_length = sizeof(float)*SAT_ROWS*SAT_COLS*4;
+    size_t grid_file_length = sizeof(float)*GRID_ROWS*GRID_COLS*4;
+
+    int sat_fd = fileno(sat_file);
+    int grid_fd = fileno(grid_file);
+
+    float * sat_coords = mmap(NULL, sat_file_length, PROT_READ, MAP_SHARED,
+                  sat_fd, 0);
+    float * grid_coords = mmap(NULL, grid_file_length, PROT_READ, MAP_SHARED,
+                  grid_fd, 0);
+
+
+    pthread_t north;
+    worker_args_t north_args;
+    north_args.sat_coords = sat_coords;
+    north_args.grid_coords = grid_coords;
+    north_args.src_idx = src_idx;
+    north_args.dst_idx = dst_idx;
+    north_args.north = true;
+    //pthread_create(&north, NULL, worker, &north_args);
+    worker(&north_args);
+
+    pthread_t south;
+    worker_args_t south_args = north_args;
+    south_args.north = false;
+    //pthread_create(&south, NULL, worker, &south_args);
+    worker(&south_args);
+    //pthread_join(north,NULL);
+    //pthread_join(south,NULL);
     fclose(src_idx);
     fclose(dst_idx);
     return 0;
