@@ -1,8 +1,3 @@
-#define GRID_ROWS 3600
-#define GRID_COLS 7200
-#define SAT_ROWS 21696
-#define SAT_COLS 21696
-
 #define _POSIX_SOURCE
 
 #define NDEBUG
@@ -17,7 +12,16 @@
 #include <xmmintrin.h>
 #include <time.h>
 #include <pthread.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
+//#define SAT_ROWS 21696
+//#define SAT_COLS 21696
+size_t SAT_ROWS=-1;
+size_t SAT_COLS=-1;
+size_t GRID_ROWS=-1;
+size_t GRID_COLS=-1;
 
 size_t grididx(size_t i, size_t j){
     assert (i < GRID_ROWS);
@@ -33,7 +37,7 @@ size_t satidx(size_t i, size_t j){
 
 
 float d(float * a, float * b){
-    if isnan(a[0]){
+    if(isnan(a[0])){
         assert(false);
         return INFINITY;
     } else{
@@ -53,9 +57,10 @@ typedef struct {
 } diag_t;
 
 
-void idxmin_grid(float * grid_coords, float x, float y, float z, size_t start_i, size_t start_j, size_t *final_i, size_t *final_j, diag_t * diag){
-    size_t i = start_i;
-    size_t j = start_j;
+void idxmin_grid(float * grid_coords, float x, float y, float z, size_t start_i, size_t start_j, size_t *final_i, size_t *final_j, diag_t * diag, int pixel, int scan){
+    int32_t i = start_i;
+    int32_t j = start_j;
+    uint32_t outer_loops = 0;
     uint32_t num_steps_i = 0;
     uint32_t num_steps_j = 0;
     union {
@@ -69,10 +74,13 @@ void idxmin_grid(float * grid_coords, float x, float y, float z, size_t start_i,
     while(true){
         bool first = true;
         // first scan fast axis
+        #ifdef DEBUG
+        float _dnow = d(&grid_coords[grididx(i,j)], xyz.xyz);
+        printf("%zu %zu %f\n", i, j, _dnow);
+        #endif
         while(true){
             float dleft, dright;
             float dnow = d(&grid_coords[grididx(i,j)], xyz.xyz);
-            //printf("%d %d %f\n", i, j, dnow);
             if((j > 0) && (j < (GRID_COLS-1))){
                 dleft = d(&grid_coords[grididx(i,j-1)], xyz.xyz);
                 dright = d(&grid_coords[grididx(i,j+1)], xyz.xyz);
@@ -80,36 +88,54 @@ void idxmin_grid(float * grid_coords, float x, float y, float z, size_t start_i,
                 // wrap
                 dleft = d(&grid_coords[grididx(i,GRID_COLS-1)], xyz.xyz);
                 dright = d(&grid_coords[grididx(i,j+1)], xyz.xyz);
-            } else if (j == GRID_COLS-1){
+            } else {
+                assert (j == GRID_COLS-1);
                 dleft = d(&grid_coords[grididx(i,j-1)], xyz.xyz);
                 dright = d(&grid_coords[grididx(i,0)], xyz.xyz);
             }
             if((dleft < dnow) && (dleft < dright)){
                 first = false;
-                j = (j-1) % GRID_COLS;
+                if (j > 0){
+                    j = (j-1);
+                } else {
+                    j = GRID_COLS - 1;
+                }
             } else if((dright < dnow) && (dright < dleft)){
                 first = false;
-                j = (j+1) % GRID_COLS;
+                if (j < (GRID_COLS-1)){
+                    j = (j+1);
+                } else {
+                    j = 0;
+                }
             } else {
                 // At minimum, don't move any more
                 break;
             }
             num_steps_j++;
+            if (num_steps_j > 100000){
+                printf("Took too many j steps (pixel:%d, scan:%d, i_steps:%d, outer_loops:%d, x:%f, y:%f, z:%f, start_i:%zu, start_j:%zu, dnow:%f)\n", pixel, scan, num_steps_i, outer_loops, x, y, z, start_i, start_j, dnow);
+                exit(2);
+            }
         }
+        #ifdef DEBUG
+        _dnow = d(&grid_coords[grididx(i,j)], xyz.xyz);
+        printf("%zu %zu %f\n", i, j, _dnow);
+        printf("Switching to i\n");
+        #endif
         while(true){
             float dup, ddown;
             float dnow = d(&grid_coords[grididx(i,j)], xyz.xyz);
-            //printf("%d %d %f\n", i, j, dnow);
             if((i > 0) && (i < (GRID_ROWS-1))){
                 dup = d(&grid_coords[grididx(i-1,j)], xyz.xyz);
                 ddown = d(&grid_coords[grididx(i+1,j)], xyz.xyz);
             } else if (j == 0) {
                 dup = INFINITY;
                 ddown = d(&grid_coords[grididx(i+1,j)], xyz.xyz);
-            } else if (j == GRID_ROWS-1){
+            } else {
+                assert(j == GRID_ROWS-1);
                 dup = d(&grid_coords[grididx(i-1,j)], xyz.xyz);
                 ddown = INFINITY;
-            }
+            } 
             if((dup < dnow) && (dup < ddown)){
                 first = false;
                 i = i-1;
@@ -121,21 +147,36 @@ void idxmin_grid(float * grid_coords, float x, float y, float z, size_t start_i,
                 break;
             }
             num_steps_i++;
+            if (num_steps_i > 100000){
+                printf("Took too many i steps\n");
+                exit(2);
+            }
         }
+        #ifdef DEBUG
+        _dnow = d(&grid_coords[grididx(i,j)], xyz.xyz);
+        printf("%zu %zu %f\n", i, j, _dnow);
+        #endif
 
         if(first){
             (*final_i) = i;
             (*final_j) = j;
             diag->num_steps_i = num_steps_i;
             diag->num_steps_j = num_steps_j;
+            #ifdef DEBUG
+            printf("Done\n");
+            #endif
             return;
+        }
+        outer_loops++;
+        if (outer_loops > 100){
+            printf("Too many outer loops\n");
+            exit(2);
         }
     }
 }
 
 
-void hemisphere(float * grid_coords, float * sat_coords, FILE* src_idx, FILE* dst_idx, bool north){
-    const float threshold_radius = 5e3;
+void hemisphere(float * grid_coords, float * sat_coords, FILE* src_idx, FILE* dst_idx, bool north, float threshold_radius){
     int num_found = 0;
     int total = 0;
     size_t start_i = GRID_ROWS / 2;
@@ -152,6 +193,7 @@ void hemisphere(float * grid_coords, float * sat_coords, FILE* src_idx, FILE* ds
         scan_start = SAT_ROWS/2-1;
         scan_final = scan_start*2; // last lat will be 0
     }
+    printf("Starting at %d,0\n", scan_start);
 
     for (int scan=scan_start;scan<scan_final;scan++){
         int lat;
@@ -187,9 +229,10 @@ void hemisphere(float * grid_coords, float * sat_coords, FILE* src_idx, FILE* ds
             }
             diag_t diag;
             // Most time spent here
-            idxmin_grid(grid_coords, x, y, z, start_i, start_j, &final_i, &final_j, &diag);
+            idxmin_grid(grid_coords, x, y, z, start_i, start_j, &final_i, &final_j, &diag, pixel, scan);
             float d2final = d(&grid_coords[grididx(final_i,final_j)], xyz.xyz);
             float dfinal = sqrtf(d2final);
+            //printf("%f\n", dfinal);
             if(dfinal < threshold_radius){
                 start_i = final_i;
                 start_j = final_j;
@@ -198,16 +241,16 @@ void hemisphere(float * grid_coords, float * sat_coords, FILE* src_idx, FILE* ds
                 uint32_t src = lat*SAT_COLS + lon;
                 fwrite(&dst, sizeof(uint32_t), 1, dst_idx);
                 fwrite(&src, sizeof(uint32_t), 1, src_idx);
-                if((final_i*.05-90) > max_lat){
-                    max_lat = final_i*.05 - 90;
+                if(((final_i*180.)/GRID_ROWS-90) > max_lat){
+                    max_lat = (final_i*180.)/GRID_ROWS - 90;
                 }
             }
             total++;
             total_nsteps_i += diag.num_steps_i;
             total_nsteps_j += diag.num_steps_j;
         }
-        if( lat % 10 == 0 ){
-            fprintf(stderr, "%d/%d found %d/%d; avg isteps: %f jsteps: %f max lat: %f\n", lat, SAT_ROWS, num_found, total, total_nsteps_i/(total+0.0), total_nsteps_j/(total+0.0), max_lat);
+        if( (lat > 0) && (lat % 10 == 0) ){
+            fprintf(stderr, "%d/%zu found %d/%d; avg isteps: %f jsteps: %f max lat: %f\n", lat, SAT_ROWS, num_found, total, total_nsteps_i/(total+0.0), total_nsteps_j/(total+0.0), max_lat);
             num_found = 0;
             total = 0;
             total_nsteps_i = 0;
@@ -222,6 +265,7 @@ typedef struct {
     FILE * src_idx;
     FILE * dst_idx;
     bool north;
+    float threshold_radius;
 } worker_args_t;
 
 void * worker(void * worker_args){
@@ -231,11 +275,23 @@ void * worker(void * worker_args){
     FILE * src_idx = args->src_idx;
     FILE * dst_idx = args->dst_idx;
     bool north = args->north;
-    hemisphere(grid_coords, sat_coords, src_idx, dst_idx, north);
+    float threshold_radius = args->threshold_radius;
+    hemisphere(grid_coords, sat_coords, src_idx, dst_idx, north, threshold_radius);
     return NULL;
 }
 
-int main(){
+int main(int argc, char *argv[]){
+    if(argc != 6){
+        printf("usage: satrows satcols gridrows gridcols radius\n");
+        return 1;
+    }
+    SAT_ROWS = atoi(argv[1]);
+    SAT_COLS = atoi(argv[2]);
+    GRID_ROWS = atoi(argv[3]);
+    GRID_COLS = atoi(argv[4]);
+    float threshold_radius = atof(argv[5]);
+    //SAT_ROWS=21696;
+    //SAT_COLS=21696;
     const char * sat_coords_fname = "sat_coords.dat";
     const char * grid_coords_fname = "grid_coords.dat";
     const char * dst_idx_fname = "dst_index.dat";
@@ -251,23 +307,37 @@ int main(){
     int sat_fd = fileno(sat_file);
     int grid_fd = fileno(grid_file);
 
+    struct stat sat_stat;
+    struct stat grid_stat;
+    fstat(sat_fd, &sat_stat);
+    fstat(grid_fd, &grid_stat);
+    if(sat_file_length != sat_stat.st_size){
+        printf("%s is %zu bytes, expected %zu bytes\n", sat_coords_fname, sat_stat.st_size, sat_file_length);
+        return 2;
+    }
+    if(grid_file_length != grid_stat.st_size){
+        printf("%s is %zu bytes, expected %zu bytes\n", grid_coords_fname, grid_stat.st_size, grid_file_length);
+        return 2;
+    }
+
     float * sat_coords = mmap(NULL, sat_file_length, PROT_READ, MAP_SHARED,
                   sat_fd, 0);
     float * grid_coords = mmap(NULL, grid_file_length, PROT_READ, MAP_SHARED,
                   grid_fd, 0);
 
 
-    pthread_t north;
+    //pthread_t north;
     worker_args_t north_args;
     north_args.sat_coords = sat_coords;
     north_args.grid_coords = grid_coords;
     north_args.src_idx = src_idx;
     north_args.dst_idx = dst_idx;
     north_args.north = true;
+    north_args.threshold_radius = threshold_radius;
     //pthread_create(&north, NULL, worker, &north_args);
     worker(&north_args);
 
-    pthread_t south;
+    //pthread_t south;
     worker_args_t south_args = north_args;
     south_args.north = false;
     //pthread_create(&south, NULL, worker, &south_args);
